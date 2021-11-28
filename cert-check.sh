@@ -1,0 +1,68 @@
+#!/bin/bash
+
+###############################################################################
+# Calculate certs TTL from configmap
+###############################################################################
+
+
+mkdir -p /tmp/cert-check/certs
+
+oc get configmap/client-ca -o custom-columns=:data -n openshift-kube-apiserver | sed 's/]//g' | sed 's/^[^:]*://g' | sed '/^$/d' > /tmp/cert-check/ca-bundle.crt
+# example for configmaps with incremental name 
+# kubeapiserverserverca=`oc get configmap --sort-by="{.metadata.creationTimestamp}" -o name --no-headers | tac  | sed -n "/kube-apiserver-server-ca/{p;q}"`
+
+# deprecated:
+# kubeapiserverserverca=`oc get configmap --sort-by="{.metadata.creationTimestamp}" -o name --no-headers | tac  | sed -n "/client-ca/{p;q}"`
+# oc get configmap/client-ca --template={{.data."ca-bundle.crt"}} -o json | jq '.data."ca-bundle.crt"' | awk '{gsub(/\\n/,"\n")}1' | sed 's/"//g' > ca-bundle.crt
+
+#for each crt in /tmp/cert-check, split in one file for each certificate in /tmp/cert-check/certs
+for file in $(ls -1 /tmp/cert-check/*.crt); do
+    # get filename without extension
+    fname=$(basename "$file" .crt)
+    filename="${file##*/}"
+    echo $filename
+    awk 'BEGIN {c=0;} /BEGIN CERT/{c++} { print > "./tmp/cert-check/certs/cert." c ".crt"}' < /tmp/cert-check/$filename
+
+    for tmpfile in $(ls -1 ./tmp/cert-check/certs/cert.*.crt); do
+        echo $tmpfile >> ./tmp/cert-check/check.txt
+        # save the output of openssl to notafter variable
+        notafter=$(openssl x509 -in $tmpfile -noout -enddate)
+        # split and remove before equal in notafter variable
+        notafter=$(echo $notafter | cut -d= -f2)
+        # convert GMT date to UNIX timestamp
+        notafterts=$(date -d "$notafter" +%s)
+        # set timetodie variable with rest of notafterts variable and current time
+        timetodie=$((notafterts - $(date +%s)))
+        echo $notafter >> ./tmp/cert-check/check.txt
+        echo $notafter
+        echo $timetodie
+        # if the TTL is less than 7 days
+        if [ $timetodie -lt 604800 ]; then
+            echo "Certificate is about to expire"
+            # if $firstexpire is empty then set it to $notafter variable
+            if [ -z "$firstexpire" ]; then
+                firstexpire=$notafter
+            elif [[ "$notafter" < "$firstexpire" ]]; then
+                firstexpire=$notafter
+            fi        
+        fi
+    done
+done
+# if $firstexpire is not empty, create the Consolenotification
+if [ -n "$firstexpire" ]; then
+    cat <<EOF | oc apply -f -
+apiVersion: console.openshift.io/v1
+kind: ConsoleNotification
+metadata:
+  name: cert-check
+spec:
+  backgroundColor: '#cccc00'
+  color: '#000'
+  location: BannerTop
+  text: 'Advise: The kube-apiserver certificates are going to rotate soon. Not after: $firstexpire'
+EOF
+else
+# if $firstexpire is empty, delete the Consolenotification
+    oc delete ConsoleNotification cert-check
+fi
+exit 0

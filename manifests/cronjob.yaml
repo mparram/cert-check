@@ -1,0 +1,45 @@
+kind: CronJob
+apiVersion: batch/v1
+metadata:
+  name: cert-check
+  namespace: cert-check-kube-apiserver
+spec:
+  schedule: '@daily'
+  concurrencyPolicy: Allow
+  suspend: false
+  jobTemplate:
+    metadata:
+      creationTimestamp: null
+    spec:
+      template:
+        metadata:
+          creationTimestamp: null
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: cert-check
+          schedulerName: default-scheduler
+          terminationGracePeriodSeconds: 30
+          securityContext: {}
+          containers:
+            - name: cert-check
+              image: 'registry.redhat.io/openshift4/ose-tools-rhel8:v4.8'
+              args:
+                - /bin/sh
+                - '-c'
+                - bash /etc/check-script/cert-check.sh
+              resources: {}
+              volumeMounts:
+                - name: cert-check-script
+                  mountPath: /etc/check-script
+              terminationMessagePath: /dev/termination-log
+              terminationMessagePolicy: File
+              imagePullPolicy: IfNotPresent
+          serviceAccount: cert-check
+          volumes:
+            - name: cert-check-script
+              configMap:
+                name: cert-check-script
+                defaultMode: 420
+          dnsPolicy: ClusterFirst
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
